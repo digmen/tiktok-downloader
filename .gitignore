@@ -1,0 +1,7 @@
+node_modules/
+.env
+tmp/
+# Локальные Windows-бинарники (на VPS ставятся системно через apt/curl — см. README)
+bin/
+*.log
+npm-debug.log*

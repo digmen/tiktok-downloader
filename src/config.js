@@ -1,0 +1,39 @@
+import 'dotenv/config';
+import path from 'node:path';
+
+function required(name) {
+  const v = process.env[name];
+  if (!v || !v.trim()) {
+    console.error(`[config] Не задана обязательная переменная окружения: ${name}`);
+    process.exit(1);
+  }
+  return v.trim();
+}
+
+function num(name, def) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return def;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : def;
+}
+
+export const config = {
+  botToken: required('BOT_TOKEN'),
+  adminChatId: process.env.ADMIN_CHAT_ID?.trim() || null,
+
+  ytdlpPath: process.env.YTDLP_PATH?.trim() || 'yt-dlp',
+  ffmpegPath: process.env.FFMPEG_PATH?.trim() || 'ffmpeg',
+  ffprobePath: process.env.FFPROBE_PATH?.trim() || 'ffprobe',
+  tmpDir: path.resolve(process.env.TMP_DIR?.trim() || './tmp'),
+
+  queueConcurrency: num('QUEUE_CONCURRENCY', 2),
+  queueMaxSize: num('QUEUE_MAX_SIZE', 20),
+  userLimitCount: num('USER_LIMIT_COUNT', 5),
+  userLimitWindowMin: num('USER_LIMIT_WINDOW_MIN', 60),
+
+  maxFilesizeMb: num('MAX_FILESIZE_MB', 49),
+  downloadTimeoutSec: num('DOWNLOAD_TIMEOUT_SEC', 300),
+  minFreeDiskMb: num('MIN_FREE_DISK_MB', 2000),
+
+  telegramApiRoot: process.env.TELEGRAM_API_ROOT?.trim() || null,
+};
