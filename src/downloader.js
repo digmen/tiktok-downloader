@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config } from './config.js';
 import { mapYtDlpError, UserFacingError } from './errors.js';
+import { resolveTikwm, downloadUrlToFile } from './tikwm.js';
 
 // Промис-обёртка над execFile. Никогда не используем shell — только массив
 // аргументов, что исключает инъекцию команд через содержимое URL.
@@ -60,32 +61,88 @@ async function probeVideo(filePath) {
 }
 
 // Фото-пост TikTok (слайдшоу): URL вида /photo/. yt-dlp не понимает /photo/,
-// но прекрасно извлекает тот же пост по /video/. Из фото-поста реально
-// доступны звук (mp3) и обложка — их и отдаём.
+// но извлекает тот же пост по /video/.
 function isPhotoPost(url) {
   return /\/photo\//i.test(url);
 }
 
 /**
  * Скачивает один TikTok-пост (видео или фото-слайдшоу).
+ * Стратегия «двойное дно»: сначала tikwm (все картинки слайдшоу, видео без
+ * водяного знака), при любой его осечке — откат на yt-dlp.
  * @param {string} url  уже провалидированная ссылка
  * @returns {Promise<
- *   | { type: 'video', filePath: string, jobDir: string, meta: object, title?: string }
- *   | { type: 'photo', audioPath: string, imagePath?: string, jobDir: string, title?: string }
+ *   | { type: 'video', filePath: string, audioPath: string|null, jobDir: string, meta: object, title?: string, source: string }
+ *   | { type: 'photo', images: string[], audioPath: string|null, jobDir: string, title?: string, source: string }
  * >}
  * @throws {UserFacingError}
  */
 export async function downloadTikTok(url) {
-  const jobId = randomUUID();
-  const jobDir = path.join(config.tmpDir, jobId);
+  const jobDir = path.join(config.tmpDir, randomUUID());
   await fs.mkdir(jobDir, { recursive: true });
 
+  try {
+    return await downloadViaTikwm(url, jobDir);
+  } catch (tikwmErr) {
+    console.warn('[downloader] tikwm не сработал, откат на yt-dlp:', tikwmErr.message);
+    await clearDir(jobDir); // убираем частично скачанное перед второй попыткой
+    try {
+      return await downloadViaYtDlp(url, jobDir);
+    } catch (ytErr) {
+      await cleanupJob(jobDir);
+      throw ytErr; // уже UserFacingError из yt-dlp-пути
+    }
+  }
+}
+
+const maxBytes = () => config.maxFilesizeMb * 1024 * 1024;
+
+// --- Основной путь: tikwm ---
+async function downloadViaTikwm(url, jobDir) {
+  const info = await resolveTikwm(url); // бросит → откат на yt-dlp
+
+  if (info.type === 'photo') {
+    const images = [];
+    let i = 0;
+    for (const imgUrl of info.imageUrls.slice(0, 35)) {
+      const dest = path.join(jobDir, `img_${String(i).padStart(2, '0')}.jpg`);
+      try {
+        await downloadUrlToFile(imgUrl, dest, maxBytes());
+        images.push(dest);
+        i++;
+      } catch (e) {
+        console.error('[tikwm] картинка не скачалась:', e.message);
+      }
+    }
+    if (!images.length) throw new Error('tikwm: не скачалось ни одной картинки');
+
+    let audioPath = null;
+    if (info.audioUrl) {
+      try {
+        audioPath = await downloadUrlToFile(info.audioUrl, path.join(jobDir, 'audio.mp3'), maxBytes());
+      } catch (e) {
+        console.error('[tikwm] звук не скачался:', e.message);
+      }
+    }
+    return { type: 'photo', images, audioPath, jobDir, title: info.title, source: 'tikwm' };
+  }
+
+  // Видео
+  const filePath = path.join(jobDir, 'media.mp4');
+  await downloadUrlToFile(info.videoUrl, filePath, maxBytes()); // слишком большое → откат
+  const meta = await probeVideo(filePath);
+  const audioPath = meta.hasAudio ? await extractAudioMp3(filePath, jobDir) : null;
+  return { type: 'video', filePath, audioPath, jobDir, meta, title: info.title, source: 'tikwm' };
+}
+
+// --- Запасной путь: yt-dlp ---
+async function downloadViaYtDlp(url, jobDir) {
   const photo = isPhotoPost(url);
   const ytUrl = photo ? url.replace(/\/photo\//i, '/video/') : url;
   const outputTemplate = path.join(jobDir, 'media.%(ext)s');
 
-  // Общие флаги. --write-info-json даёт заголовок в UTF-8 (иначе на Windows
-  // yt-dlp печатает его в кодировке системы и текст ломается).
+  // --write-info-json даёт заголовок в UTF-8 (иначе на Windows yt-dlp печатает
+  // его в кодировке системы и текст ломается).
   const common = [
     '--max-filesize', `${config.maxFilesizeMb}M`,
     '--no-playlist',
@@ -99,7 +156,7 @@ export async function downloadTikTok(url) {
 
   const args = photo
     ? [
-        // Фото-пост: качаем звук + обложку (в jpg, чтобы Telegram принял как фото).
+        // Фото-пост: yt-dlp отдаёт только обложку + звук.
         '-f', 'ba/b',
         '--write-thumbnail',
         '--convert-thumbnails', 'jpg',
@@ -107,10 +164,8 @@ export async function downloadTikTok(url) {
         '--', ytUrl,
       ]
     : [
-        // Видео: сначала пытаемся склеить лучшее видео+звук; если раздельного
-        // звука нет — берём лучший ОДИНОЧНЫЙ формат, В КОТОРОМ ЕСТЬ звук
-        // (b[acodec!=none]); и только в самом крайнем случае — любой (немой).
-        // Иначе -S res мог выбрать топовый формат без звуковой дорожки.
+        // Видео: склеить лучшее видео+звук; если раздельного звука нет — лучший
+        // одиночный формат СО звуком; в крайнем случае — любой.
         '-f', 'bv*+ba/b[acodec!=none]/b',
         '-S', 'res',
         '--merge-output-format', 'mp4',
@@ -123,18 +178,15 @@ export async function downloadTikTok(url) {
   });
 
   if (error) {
-    await cleanupJob(jobDir);
     if (error.killed || error.signal === 'SIGTERM') {
       throw new UserFacingError('⏱️ Скачивание заняло слишком много времени и было прервано.');
     }
     if (error.code === 'ENOENT') {
-      // Бинарник yt-dlp не найден — это ошибка конфигурации сервера, не пользователя.
       console.error('[downloader] yt-dlp не найден по пути:', config.ytdlpPath);
       throw new UserFacingError('🔧 Технические неполадки на сервере. Попробуйте позже.', {
         alertAdmin: true,
       });
     }
-    // Любая другая ошибка — разбираем stderr и отдаём человеческое сообщение.
     console.error('[downloader] yt-dlp stderr:', stderr.slice(0, 2000));
     throw mapYtDlpError(stderr);
   }
@@ -144,26 +196,32 @@ export async function downloadTikTok(url) {
   if (photo) {
     const audioPath = await findFile(jobDir, /\.(mp3|m4a|aac|opus|ogg|wav)$/i);
     if (!audioPath) {
-      await cleanupJob(jobDir);
       console.error('[downloader] Звук фото-поста не найден. stderr:', stderr.slice(0, 1000));
       throw mapYtDlpError(stderr || 'no audio formats');
     }
-    const imagePath = await findFile(jobDir, /\.(jpg|jpeg|png|webp)$/i);
-    return { type: 'photo', audioPath, imagePath, jobDir, title };
+    const cover = await findFile(jobDir, /\.(jpg|jpeg|png|webp)$/i);
+    return { type: 'photo', images: cover ? [cover] : [], audioPath, jobDir, title, source: 'yt-dlp' };
   }
 
   const filePath = await findFile(jobDir, /\.(mp4|mov|webm|mkv)$/i);
   if (!filePath) {
-    await cleanupJob(jobDir);
     console.error('[downloader] Файл не найден после загрузки. stderr:', stderr.slice(0, 1000));
     throw mapYtDlpError(stderr || 'no video formats');
   }
 
   const meta = await probeVideo(filePath);
-  // Отдельно вытаскиваем звук из видео в mp3, чтобы прислать его отдельным
-  // сообщением. Извлекаем только если звуковая дорожка реально есть.
   const audioPath = meta.hasAudio ? await extractAudioMp3(filePath, jobDir) : null;
-  return { type: 'video', filePath, audioPath, jobDir, meta, title };
+  return { type: 'video', filePath, audioPath, jobDir, meta, title, source: 'yt-dlp' };
+}
+
+// Удаляет содержимое папки, но саму папку оставляет (для повторной попытки).
+async function clearDir(dir) {
+  try {
+    const entries = await fs.readdir(dir);
+    await Promise.all(entries.map((e) => fs.rm(path.join(dir, e), { recursive: true, force: true })));
+  } catch (e) {
+    console.error('[downloader] Не удалось очистить', dir, e.message);
+  }
 }
 
 // Извлекает звук из видео в mp3 (перекодирование, качество ~190 kbps VBR).

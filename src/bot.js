@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { Bot, InputFile } from 'grammy';
+import { Bot, InputFile, InputMediaBuilder } from 'grammy';
 import { autoRetry } from '@grammyjs/auto-retry';
 import { config } from './config.js';
 import { extractTikTokUrl } from './urls.js';
@@ -16,7 +16,8 @@ export const bot = new Bot(config.botToken, {
 bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 30 }));
 
 const WELCOME = [
-  '👋 Привет! Я скачиваю видео из TikTok в лучшем качестве.',
+  '👋 Привет!',
+  'Я скачиваю видео из TikTok в лучшем качестве.',
   '',
   'Просто пришли мне ссылку на видео — и я верну его файлом.',
   '',
@@ -167,31 +168,43 @@ async function sendVideoFile(ctx, job) {
   }
 }
 
-// Отправка фото-поста TikTok: обложка (если есть) + звук (mp3).
+// Отправка фото-поста TikTok: все картинки слайдшоу (альбомом) + звук (mp3).
 async function sendPhotoPost(ctx, job) {
-  const { audioPath, imagePath, title } = job;
+  const { audioPath, images = [], title } = job;
   const caption = title ? title.slice(0, 1024) : undefined;
 
-  if (imagePath) {
-    try {
-      await ctx.replyWithPhoto(new InputFile(fs.createReadStream(imagePath)), { caption });
-    } catch (e) {
-      console.error('[bot] Не удалось отправить обложку:', e.message);
+  try {
+    if (images.length === 1) {
+      await ctx.replyWithPhoto(new InputFile(images[0]), { caption });
+    } else if (images.length > 1) {
+      // Telegram альбом — до 10 фото за раз, поэтому бьём на пачки.
+      for (let i = 0; i < images.length; i += 10) {
+        const chunk = images.slice(i, i + 10);
+        const media = chunk.map((p, idx) =>
+          InputMediaBuilder.photo(new InputFile(p), i === 0 && idx === 0 ? { caption } : {}),
+        );
+        await ctx.replyWithMediaGroup(media);
+      }
     }
+  } catch (e) {
+    console.error('[bot] Не удалось отправить картинки:', e.message);
   }
 
-  // Звук фото-поста — основное, что просят. Отправляем как аудио.
-  await ctx.replyWithAudio(new InputFile(fs.createReadStream(audioPath)), {
-    caption: imagePath ? undefined : caption,
-    title,
-  });
+  // Звук поста — отдельным сообщением.
+  if (audioPath) {
+    try {
+      await ctx.replyWithAudio(new InputFile(audioPath), { title });
+    } catch (e) {
+      console.error('[bot] Не удалось отправить звук:', e.message);
+    }
+  }
 }
 
 async function editStatus(ctx, statusMsg, text) {
   if (!statusMsg) {
     try {
       await ctx.reply(text);
-    } catch {}
+    } catch { }
     return;
   }
   try {
@@ -205,7 +218,7 @@ async function deleteStatus(ctx, statusMsg) {
   if (!statusMsg) return;
   try {
     await ctx.api.deleteMessage(statusMsg.chat.id, statusMsg.message_id);
-  } catch {}
+  } catch { }
 }
 
 // Глобальный перехватчик ошибок grammY — бот не должен падать.
