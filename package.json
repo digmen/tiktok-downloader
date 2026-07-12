@@ -19,7 +19,7 @@
     "grammy"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=18.15"
   },
   "scripts": {
     "start": "node src/index.js",

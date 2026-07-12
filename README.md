@@ -64,7 +64,7 @@ Telegram-бот, который скачивает контент из **TikTok*
 | `src/queue.js` | очередь загрузок + дедупликация ссылок |
 | `src/bot.js` | хендлеры grammY, команды, отправка контента |
 | `src/index.js` | запуск, graceful shutdown, глобальные перехватчики ошибок |
-| `ecosystem.config.js` | конфиг PM2 |
+| `ecosystem.config.cjs` | конфиг PM2 |
 | `scripts/update-ytdlp.sh` | самообновление yt-dlp для cron |
 
 ---
@@ -148,7 +148,7 @@ TMP_DIR=/var/tiktokbot/tmp
 ### 6. Запуск и автозапуск
 
 ```bash
-sudo -u tiktokbot bash -c 'cd /opt/tiktok-bot && pm2 start ecosystem.config.js'
+sudo -u tiktokbot bash -c 'cd /opt/tiktok-bot && pm2 start ecosystem.config.cjs'
 sudo -u tiktokbot pm2 save
 pm2 startup systemd -u tiktokbot --hp /home/tiktokbot   # выполнить подсказанную команду
 ```

@@ -1,4 +1,6 @@
-// Конфигурация PM2. Запуск: pm2 start ecosystem.config.js
+// Конфигурация PM2. Запуск: pm2 start ecosystem.config.cjs
+// Расширение .cjs обязательно: в package.json стоит "type": "module",
+// а PM2 читает конфиг через require() (CommonJS).
 module.exports = {
   apps: [
     {
