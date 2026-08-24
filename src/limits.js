@@ -14,6 +14,8 @@ const hits = new Map();
  * @returns {{ allowed: true } | { allowed: false, retryAfterMin: number }}
  */
 export function checkUserLimit(userId) {
+  // 0 или меньше в USER_LIMIT_COUNT = лимит выключен (бот личный, им пользуется владелец).
+  if (config.userLimitCount <= 0) return { allowed: true };
   const now = Date.now();
   const arr = (hits.get(userId) || []).filter((t) => now - t < windowMs);
 
