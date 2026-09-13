@@ -203,7 +203,8 @@ pm2 monit                  # память / CPU
 | Переменная | По умолчанию | Что делает |
 |-----------|--------------|-----------|
 | `BOT_TOKEN` | — (обязательно) | токен бота от @BotFather |
-| `ADMIN_CHAT_ID` | — | ваш Telegram-id для `/stats` и алертов |
+| `OWNER_ID` | — (обязательно) | ваш Telegram-id: всегда допущен, получает карточки запросов доступа |
+| `ADMIN_CHAT_ID` | — | Telegram-id для `/stats` и алертов (обычно = `OWNER_ID`) |
 | `YTDLP_PATH` | `yt-dlp` | путь к бинарнику yt-dlp |
 | `FFMPEG_PATH` | `ffmpeg` | путь к ffmpeg (склейка, извлечение звука) |
 | `FFPROBE_PATH` | `ffprobe` | путь к ffprobe (метаданные) |
