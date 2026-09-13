@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { Bot, InputFile, InputMediaBuilder } from 'grammy';
+import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
 import { autoRetry } from '@grammyjs/auto-retry';
 import { config } from './config.js';
 import { extractTikTokUrl } from './urls.js';
@@ -7,6 +7,7 @@ import { checkUserLimit, refundUserLimit } from './limits.js';
 import { enqueueDownload, queuePosition, queueStats } from './queue.js';
 import { cleanupJob, hasEnoughDisk } from './downloader.js';
 import { UserFacingError } from './errors.js';
+import { addPending, approve, deny, isAllowed, isPending, listAllowed, revoke } from './access.js';
 
 export const bot = new Bot(config.botToken, {
   client: config.telegramApiRoot ? { apiRoot: config.telegramApiRoot } : undefined,
@@ -14,6 +15,61 @@ export const bot = new Bot(config.botToken, {
 
 // Автоповтор при 429 (Too Many Requests) и временных сбоях Telegram.
 bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 30 }));
+
+// Доступ по запросу: чужой человек → карточка владельцу с кнопками, никто не заходит
+// без явного «да» от него (см. access.js). Не открытая регистрация.
+bot.use(async (ctx, next) => {
+  const from = ctx.from;
+  if (!from) return;
+  if (isAllowed(from.id)) return next();
+  if (ctx.callbackQuery) return next();
+
+  if (isPending(from.id)) {
+    await ctx.reply('⏳ Запрос уже отправлен автору бота — жди подтверждения.');
+    return;
+  }
+  addPending(from.id, { username: from.username, firstName: from.first_name });
+  await ctx.reply('📨 Запрос отправлен автору бота. Подтвердит — напишу тебе.');
+  const who = from.username ? '@' + from.username : from.first_name || `id ${from.id}`;
+  await bot.api
+    .sendMessage(config.ownerId, `🆕 Хочет пользоваться TikTok-ботом: ${who} (id ${from.id})`, {
+      reply_markup: new InlineKeyboard().text('✅ Разрешить', `allow:${from.id}`).text('🚫 Отклонить', `deny:${from.id}`),
+    })
+    .catch(() => {});
+});
+
+bot.callbackQuery(/^allow:(\d+)$/, async (ctx) => {
+  if (String(ctx.from.id) !== String(config.ownerId)) return ctx.answerCallbackQuery();
+  const id = ctx.match[1];
+  approve(id);
+  await ctx.answerCallbackQuery({ text: 'Разрешено' });
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  await ctx.editMessageText(`${ctx.callbackQuery.message.text}\n\n✅ Разрешено`).catch(() => {});
+  await bot.api.sendMessage(id, '✅ Доступ открыт! Пришли ссылку на TikTok-видео.').catch(() => {});
+});
+
+bot.callbackQuery(/^deny:(\d+)$/, async (ctx) => {
+  if (String(ctx.from.id) !== String(config.ownerId)) return ctx.answerCallbackQuery();
+  const id = ctx.match[1];
+  deny(id);
+  await ctx.answerCallbackQuery({ text: 'Отклонено' });
+  await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+  await ctx.editMessageText(`${ctx.callbackQuery.message.text}\n\n🚫 Отклонено`).catch(() => {});
+  await bot.api.sendMessage(id, '🚫 Доступ не дали.').catch(() => {});
+});
+
+bot.command('users', (ctx) => {
+  if (String(ctx.from?.id) !== String(config.ownerId)) return;
+  const list = listAllowed();
+  ctx.reply(list.length ? '👥 Разрешены:\n' + list.join('\n') : 'Пока никого, кроме тебя.');
+});
+bot.command('revoke', (ctx) => {
+  if (String(ctx.from?.id) !== String(config.ownerId)) return;
+  const id = (ctx.match ?? '').trim();
+  if (!id) return ctx.reply('/revoke <id>');
+  revoke(id);
+  ctx.reply(`Отозвано: ${id}`);
+});
 
 const WELCOME = [
   '👋 Привет!',

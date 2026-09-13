@@ -19,6 +19,8 @@ function num(name, def) {
 
 export const config = {
   botToken: required('BOT_TOKEN'),
+  // Владелец: всегда допущен + получает карточки с запросами доступа (см. access.js).
+  ownerId: required('OWNER_ID'),
   adminChatId: process.env.ADMIN_CHAT_ID?.trim() || null,
 
   ytdlpPath: process.env.YTDLP_PATH?.trim() || 'yt-dlp',
