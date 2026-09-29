@@ -8,6 +8,7 @@ import { enqueueDownload, queuePosition, queueStats } from './queue.js';
 import { cleanupJob, hasEnoughDisk } from './downloader.js';
 import { UserFacingError } from './errors.js';
 import { addPending, approve, deny, isAllowed, isPending, listAllowed, revoke } from './access.js';
+import { logUsage, usageStats, usersByActivity } from './usage.js';
 
 export const bot = new Bot(config.botToken, {
   client: config.telegramApiRoot ? { apiRoot: config.telegramApiRoot } : undefined,
@@ -112,20 +113,43 @@ function formatUptime(ms) {
 // /ping — быстрая проверка, что бот жив (доступно всем).
 bot.command('ping', (ctx) => ctx.reply('🏓 pong'));
 
-// /stats — статистика сервера (только для админа).
+// /stats — статистика сервера (только для админа). Верх — с рестарта процесса
+// (как раньше), низ — persisted (переживает рестарт, из usage.jsonl).
 bot.command('stats', (ctx) => {
   if (!isAdmin(ctx)) return; // молча игнорируем чужих
   const q = queueStats();
   const total = stats.ok + stats.fail;
+  const u = usageStats();
   const text = [
-    '📊 Статистика',
+    '📊 Статистика (с рестарта)',
     `⏱ Аптайм: ${formatUptime(Date.now() - startedAt)}`,
     `✅ Успешно: ${stats.ok}`,
     `❌ С ошибкой: ${stats.fail}`,
     `📈 Всего запросов: ${total}`,
     `⏳ В очереди: ${q.size}, качается сейчас: ${q.pending}`,
+    '',
+    '📊 За всё время',
+    `👥 Уникальных пользователей: ${u.uniqueUsersAllTime}`,
+    `📈 Всего скачиваний: ${u.totalEvents} (✅ ${u.ok} · ❌ ${u.fail})`,
+    `🗓 Активны за 7 дней: ${u.last7d.users} чел., ${u.last7d.events} загрузок`,
+    `🗓 Активны за 30 дней: ${u.last30d.users} чел., ${u.last30d.events} загрузок`,
   ].join('\n');
   return ctx.reply(text);
+});
+
+// /activeusers — кто реально скачивал (не путать с /users — там просто допущенные),
+// отсортировано по последней активности, самые свежие сверху.
+bot.command('activeusers', (ctx) => {
+  if (!isAdmin(ctx)) return;
+  const list = usersByActivity();
+  if (!list.length) return ctx.reply('Пока никто ничего не скачивал.');
+  const lines = list.slice(0, 50).map((u) => {
+    const who = u.username ? '@' + u.username : `id ${u.userId}`;
+    const last = new Date(u.lastTs).toISOString().slice(0, 16).replace('T', ' ');
+    return `${who} — ${u.events} загрузок (✅${u.ok}), последний раз ${last}`;
+  });
+  const more = list.length > 50 ? `\n…и ещё ${list.length - 50}` : '';
+  return ctx.reply(`👥 Активные пользователи (${list.length}):\n` + lines.join('\n') + more);
 });
 
 // Основной обработчик текстовых сообщений со ссылкой.
@@ -174,8 +198,10 @@ bot.on('message:text', async (ctx) => {
     else await sendVideoFile(ctx, job);
     await deleteStatus(ctx, statusMsg);
     stats.ok++;
+    logUsage({ userId, username: ctx.from.username, ok: true });
   } catch (err) {
     stats.fail++;
+    logUsage({ userId, username: ctx.from.username, ok: false });
     // Загрузка не состоялась — возвращаем «попытку» пользователю обратно.
     refundUserLimit(userId);
 
