@@ -21,6 +21,8 @@ export const config = {
   botToken: required('BOT_TOKEN'),
   // Владелец: всегда допущен + получает карточки с запросами доступа (см. access.js).
   ownerId: required('OWNER_ID'),
+  // Вход через подписку на канал (channel.js). Пустое значение выключает проверку.
+  channel: (process.env.CHANNEL ?? '@DigmenDevLogs').trim(),
   adminChatId: process.env.ADMIN_CHAT_ID?.trim() || null,
 
   ytdlpPath: process.env.YTDLP_PATH?.trim() || 'yt-dlp',

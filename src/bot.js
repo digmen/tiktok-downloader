@@ -8,6 +8,7 @@ import { enqueueDownload, queuePosition, queueStats } from './queue.js';
 import { cleanupJob, hasEnoughDisk } from './downloader.js';
 import { UserFacingError } from './errors.js';
 import { addPending, approve, deny, isAllowed, isPending, listAllowed, revoke } from './access.js';
+import { subscriptionGate } from './channel.js';
 import { logUsage, usageStats, usersByActivity } from './usage.js';
 
 export const bot = new Bot(config.botToken, {
@@ -16,6 +17,9 @@ export const bot = new Bot(config.botToken, {
 
 // Автоповтор при 429 (Too Many Requests) и временных сбоях Telegram.
 bot.api.config.use(autoRetry({ maxRetryAttempts: 3, maxDelaySeconds: 30 }));
+
+// Вход через подписку на канал — раньше доступа: неподписанному не нужна карточка владельцу.
+subscriptionGate(bot);
 
 // Доступ по запросу: чужой человек → карточка владельцу с кнопками, никто не заходит
 // без явного «да» от него (см. access.js). Не открытая регистрация.
