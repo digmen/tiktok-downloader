@@ -173,7 +173,7 @@ async function downloadViaYtDlp(url, jobDir) {
         '--', ytUrl,
       ];
 
-  const { error, stderr } = await run(config.ytdlpPath, args, {
+  const { error, stderr, stdout } = await run(config.ytdlpPath, args, {
     timeoutMs: config.downloadTimeoutSec * 1000,
   });
 
@@ -204,6 +204,10 @@ async function downloadViaYtDlp(url, jobDir) {
   }
 
   const filePath = await findFile(jobDir, /\.(mp4|mov|webm|mkv)$/i);
+  // --max-filesize: yt-dlp молча пропускает слишком большой файл (код 0, без ошибки).
+  if (!filePath && /max-filesize/i.test(stdout + stderr)) {
+    throw new UserFacingError(`📦 Видео больше ${config.maxFilesizeMb} МБ — такое бот не может отправить в Telegram.`);
+  }
   if (!filePath) {
     console.error('[downloader] Файл не найден после загрузки. stderr:', stderr.slice(0, 1000));
     throw mapYtDlpError(stderr || 'no video formats');

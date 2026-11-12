@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import { Bot, InlineKeyboard, InputFile, InputMediaBuilder } from 'grammy';
 import { autoRetry } from '@grammyjs/auto-retry';
 import { config } from './config.js';
@@ -156,8 +155,36 @@ bot.command('activeusers', (ctx) => {
   return ctx.reply(`👥 Активные пользователи (${list.length}):\n` + lines.join('\n') + more);
 });
 
+// Задача целиком (скачать + отправить) не дольше этого. Иначе одна повисшая
+// загрузка держит пользователя вечно (так было 08.11.2026: видео скачалось,
+// а отправка в Telegram зависла без ошибки).
+const JOB_TIMEOUT_MS = (config.downloadTimeoutSec + 600) * 1000;
+
+class JobTimeoutError extends UserFacingError {
+  constructor() {
+    super('⏱️ Не получилось отправить видео за отведённое время. Попробуйте ещё раз.');
+    this.name = 'JobTimeoutError';
+  }
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new JobTimeoutError()), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 // Основной обработчик текстовых сообщений со ссылкой.
-bot.on('message:text', async (ctx) => {
+// Работу НЕ ждём: grammY берёт следующее сообщение только когда обработчик
+// вернулся, и 08.11.2026 одна зависшая отправка остановила бота на 4,5 дня.
+// Теперь обработчик сразу отпускает очередь, а сама задача живёт отдельно
+// (параллельность всё равно ограничивает очередь загрузок).
+bot.on('message:text', (ctx) => {
+  handleLink(ctx).catch((e) => console.error('[bot] Задача упала мимо обработчика:', e));
+});
+
+async function handleLink(ctx) {
   const userId = ctx.from.id;
   const parsed = extractTikTokUrl(ctx.message.text);
 
@@ -195,11 +222,12 @@ bot.on('message:text', async (ctx) => {
 
   let job;
   try {
-    job = await enqueueDownload(parsed.url);
-
-    await editStatus(ctx, statusMsg, '📤 Загружаю в Telegram…');
-    if (job.type === 'photo') await sendPhotoPost(ctx, job);
-    else await sendVideoFile(ctx, job);
+    await withTimeout((async () => {
+      job = await enqueueDownload(parsed.url);
+      await editStatus(ctx, statusMsg, '📤 Загружаю в Telegram…');
+      if (job.type === 'photo') await sendPhotoPost(ctx, job);
+      else await sendVideoFile(ctx, job);
+    })(), JOB_TIMEOUT_MS);
     await deleteStatus(ctx, statusMsg);
     stats.ok++;
     logUsage({ userId, username: ctx.from.username, ok: true });
@@ -217,16 +245,20 @@ bot.on('message:text', async (ctx) => {
       await editStatus(ctx, statusMsg, '😕 Что-то пошло не так. Попробуйте ещё раз позже.');
     }
   } finally {
+    // После таймаута повисшая загрузка может ещё держать папку — её уберёт
+    // cleanupOrphans при следующем запуске.
     if (job?.jobDir) await cleanupJob(job.jobDir);
   }
-});
+}
 
 // Отправка видеофайла с корректными метаданными + звук отдельным сообщением.
 async function sendVideoFile(ctx, job) {
   const { filePath, audioPath, meta, title } = job;
   const isMp4 = /\.mp4$/i.test(filePath);
   const caption = title ? title.slice(0, 1024) : undefined;
-  const input = new InputFile(fs.createReadStream(filePath));
+  // Путь, а не поток: grammY сам открывает файл и при повторе (auto-retry)
+  // открывает заново. Уже прочитанный поток при повторе отправить нельзя.
+  const input = new InputFile(filePath);
 
   if (isMp4) {
     await ctx.replyWithVideo(input, {
@@ -244,7 +276,7 @@ async function sendVideoFile(ctx, job) {
   // Отдельным сообщением — звук из видео (как просили).
   if (audioPath) {
     try {
-      await ctx.replyWithAudio(new InputFile(fs.createReadStream(audioPath)), {
+      await ctx.replyWithAudio(new InputFile(audioPath), {
         title,
         duration: meta.duration,
       });
