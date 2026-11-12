@@ -1,14 +1,31 @@
-# 🎬 TikTok Downloader Bot
+<div align="center">
 
-<img src="avatar.png" width="120" align="right">
+<img src="avatar.png" width="140" alt="TikTok Downloader">
 
-Telegram-бот, который скачивает контент из **TikTok** в лучшем доступном
-качестве (без водяного знака, где возможно) и присылает его прямо в чат.
+# TikTok Downloader Bot
 
-Написан на **Node.js**, работает под **PM2** (без Docker), движок скачивания —
-**yt-dlp** + **ffmpeg**. Хранилища/внешних сервисов не требует.
+**Telegram-бот: видео и слайдшоу из TikTok без водяного знака — прямо в чат**<br>
+<sub>Telegram bot that downloads TikTok videos and photo posts in the best available quality, with a two-source fallback and a self-healing watchdog</sub>
+
+[![Telegram](https://img.shields.io/badge/Telegram-@dwl__robot-26A5E4?logo=telegram&logoColor=white)](https://t.me/dwl_robot)
+![Node.js](https://img.shields.io/badge/Node.js-22-339933?logo=node.js&logoColor=white)
+![JavaScript](https://img.shields.io/badge/JavaScript-ESM-F7DF1E?logo=javascript&logoColor=black)
+![grammY](https://img.shields.io/badge/grammY-1.x-009DC4)
+![yt-dlp](https://img.shields.io/badge/yt--dlp-fallback-red)
+![PM2](https://img.shields.io/badge/PM2-managed-2B037A?logo=pm2&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-blue)
+
+**[▶ Открыть в Telegram](https://t.me/dwl_robot)** · доступ по запросу
+
+</div>
 
 ---
+
+Присылаешь ссылку на TikTok и получаешь видео в лучшем качестве и отдельно звук в mp3. Для слайдшоу приходят все картинки и звук. Бот личный: каждого нового человека владелец одобряет одной кнопкой.
+
+### 📈 В работе
+
+На 12.11.2026, без владельца: доступ одобрен **111 людям**, скачивали **45**, из них **29** за последние 30 дней. Всего **395 скачиваний**, удачных **98%** (387).
 
 ## ✨ Возможности
 
@@ -52,14 +69,18 @@ Telegram-бот, который скачивает контент из **TikTok*
 
 ## 🏗 Как это устроено
 
-```
-Пользователь → Telegram → бот (grammY, long polling)
-                              │
-                        очередь (p-queue)  ← лимит на пользователя
-                              │
-                    yt-dlp + ffmpeg/ffprobe → tmp/<jobId>/
-                              │
-              видео + отдельный звук  /  обложка + звук  →  удаление файлов
+```mermaid
+flowchart LR
+    U[Пользователь] -->|ссылка| B[Бот<br/>grammY]
+    B --> G{Подписка<br/>и доступ}
+    G -->|новый человек| O[Карточка владельцу:<br/>Разрешить / Отклонить]
+    G -->|допущен| Q[Очередь p-queue<br/>+ дедупликация]
+    Q --> T[tikwm.com]
+    T -.->|осечка| Y[yt-dlp + ffmpeg]
+    T --> F[Видео + звук mp3<br/>/ картинки слайдшоу]
+    Y --> F
+    F -->|отправка, удаление файлов| U
+    W[Сторож] -.->|getWebhookInfo| B
 ```
 
 > Файлы > 50 МБ Telegram через облачный API не отправляет — такие бот вежливо
@@ -99,10 +120,14 @@ Telegram-бот, который скачивает контент из **TikTok*
 | `subscribed.json` | кто прошёл вход по подписке |
 | `usage.jsonl` | по строке на скачивание: когда, кто, удачно ли |
 
-## 🩺 Надёжность
+## 🧠 Инженерные решения и надёжность
 
-| Что может случиться | Что делает бот |
+| Задача | Решение |
 |---|---|
+| TikTok часто ломает загрузчики | Два источника: сначала **tikwm.com** (без водяного знака, все картинки слайдшоу), при любой осечке — **yt-dlp**. yt-dlp обновляется по cron |
+| Два человека прислали одну ссылку | **Дедупликация** в очереди: одна загрузка, оба получают результат |
+| Ссылка из сообщения в командной строке | yt-dlp запускается через `execFile` массивом аргументов, без shell: внедрить команду через URL нельзя. Домены — по белому списку |
+| Бан IP и перегрузка | Очередь с паузой между стартами, лимит на пользователя скользящим окном, проверка свободного места |
 | Отправка видео в Telegram зависла навсегда | Обработчик сообщения не ждёт задачу: бот сразу берёт следующее сообщение, остальные пользователи не страдают. Сама задача ограничена временем `DOWNLOAD_TIMEOUT_SEC` + 10 минут, потом человек получает «попробуйте ещё раз» |
 | Бот перестал забирать сообщения, хотя процесс жив | **Сторож**: раз в 5 минут смотрит `getWebhookInfo`. Если непрочитанные сообщения висят 3 проверки подряд (15 минут), процесс выходит, PM2 поднимает его заново |
 | Telegram просит подождать (429) | `@grammyjs/auto-retry`: ждёт и повторяет |
